@@ -10,10 +10,9 @@ query_router = QueryRouter()
 
 # Map intents to confidence scores (based on query router classifier certainty)
 INTENT_CONFIDENCE_MAP = {
-    "SQL_QUERY": 0.97,
-    "SEMANTIC_SEARCH": 0.94,
-    "HYBRID": 0.91,
-    "GENERAL": 0.85,
+    "SQL_FOCUSED": 0.97,
+    "SEMANTIC_FOCUSED": 0.94,
+    "REASONING_FOCUSED": 0.91,
 }
 
 @router.post("/")

@@ -25,6 +25,21 @@ class ChromaService:
         }
         logger.info(f"Initialized ChromaDB with 5 collections at: {CHROMA_DB_PATH}")
 
+    def _sanitize_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Sanitizes metadata dictionaries to ensure values are only of types supported by ChromaDB
+        (str, int, float, bool). Converts None values to empty strings.
+        """
+        sanitized = {}
+        for k, v in metadata.items():
+            if v is None:
+                sanitized[k] = ""
+            elif isinstance(v, (str, int, float, bool)):
+                sanitized[k] = v
+            else:
+                sanitized[k] = str(v)
+        return sanitized
+
     def add_meeting_chunks(self, meeting_id: int, chunks: List[str], metadata: Dict[str, Any]):
         """
         Embeds and adds multiple text chunks to the meeting_chunks collection.
@@ -43,7 +58,7 @@ class ChromaService:
             m = metadata.copy()
             m["meeting_id"] = meeting_id
             m["chunk_id"] = i
-            metadatas.append(m)
+            metadatas.append(self._sanitize_metadata(m))
 
         collection.add(
             ids=ids,
@@ -68,7 +83,7 @@ class ChromaService:
             ids=[item_id],
             embeddings=[embedding],
             documents=[document],
-            metadatas=[metadata]
+            metadatas=[self._sanitize_metadata(metadata)]
         )
         logger.info(f"Indexed item '{item_id}' into collection '{collection_name}'.")
 

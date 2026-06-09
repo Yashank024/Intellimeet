@@ -294,16 +294,16 @@ class QueryRouter:
         """
         Three-tier intent classifier with strict priority ordering:
 
-        Priority 1 — REASONING_QUERY (Gemini):
+        Priority 1 — REASONING_FOCUSED (Gemini):
             Exclusive reasoning verbs: why, analyze, summarize, compare, recommend...
             "Why is Payment Checkout at risk?" → Reasoning  (even though 'risk' is SQL subject)
             "Summarize recent meetings" → Reasoning
 
-        Priority 2 — SEMANTIC_QUERY (ChromaDB vector search):
+        Priority 2 — SEMANTIC_FOCUSED (ChromaDB vector search):
             Questions about what was discussed/mentioned/talked about in meetings.
             "What did Priya mention in the meeting?" → Semantic
 
-        Priority 3 — SQL_QUERY (SQLite, no Gemini):
+        Priority 3 — SQL_FOCUSED (SQLite):
             Any factual lookup: show/list/count + task/risk/escalation/project/meeting.
             "how many tasks completed by Priya" → SQL
             "show pending tasks for Rahul" → SQL
@@ -315,25 +315,25 @@ class QueryRouter:
         # Reasoning words win even when SQL subject words (risk, task, project) are also present
         has_reasoning = any(phrase in query_lower for phrase in _REASONING_EXCLUSIVE_WORDS)
         if has_reasoning:
-            logger.debug(f"[Classifier] REASONING_QUERY → exclusive reasoning verb detected")
-            return "REASONING_QUERY"
+            logger.debug(f"[Classifier] REASONING_FOCUSED → exclusive reasoning verb detected")
+            return "REASONING_FOCUSED"
 
         # Priority 2: SEMANTIC — discussing / mentioning something from meetings
         if any(phrase in query_lower for phrase in _SEMANTIC_INTENT_PHRASES):
-            logger.debug("[Classifier] SEMANTIC_QUERY → semantic phrase detected")
-            return "SEMANTIC_QUERY"
+            logger.debug("[Classifier] SEMANTIC_FOCUSED → semantic phrase detected")
+            return "SEMANTIC_FOCUSED"
 
         # Priority 3: SQL — any database subject word OR SQL verb/phrase present
         has_sql_subject = bool(words & _SQL_SUBJECT_WORDS)
         has_sql_verb = bool(words & _SQL_INTENT_WORDS)
         has_sql_phrase = any(phrase in query_lower for phrase in _SQL_INTENT_PHRASES)
         if has_sql_subject or has_sql_verb or has_sql_phrase:
-            logger.debug(f"[Classifier] SQL_QUERY → subject={has_sql_subject} verb={has_sql_verb}")
-            return "SQL_QUERY"
+            logger.debug(f"[Classifier] SQL_FOCUSED → subject={has_sql_subject} verb={has_sql_verb}")
+            return "SQL_FOCUSED"
 
         # Default: semantic search (cheaper than Gemini)
-        logger.debug("[Classifier] SEMANTIC_QUERY → default fallback")
-        return "SEMANTIC_QUERY"
+        logger.debug("[Classifier] SEMANTIC_FOCUSED → default fallback")
+        return "SEMANTIC_FOCUSED"
 
     def _pick_collections(self, query_lower: str) -> List[str]:
         """
@@ -359,109 +359,114 @@ class QueryRouter:
 
     def route_and_resolve(self, query: str) -> Dict[str, Any]:
         """
-        Routes the user query to SQL → Semantic → Reasoning pipeline.
+        Routes the user query to SQL_FOCUSED → SEMANTIC_FOCUSED → REASONING_FOCUSED retrieval pathways.
+        Then synthesizes a final response using Gemini.
         """
         intent = self.classify_intent(query)
         logger.info(f"[QueryRouter] Intent={intent} | Query='{query}'")
 
-        # ── SQL PATH ────────────────────────────────────────────────────────
-        if intent == "SQL_QUERY":
+        raw_chunks: List[str] = []
+        semantic_results = []
+        sql_trace = None
+
+        # ── SQL RETRIEVAL PATHWAY ───────────────────────────────────────────
+        if intent == "SQL_FOCUSED":
             result = SQLQueryInterpreter.interpret_and_execute(query)
-            if result["success"]:
-                response_md = self.response_builder.build_sql_response(
+            if result["success"] and result["data"]:
+                sql_context = self.response_builder.format_sql_facts(
                     result["result_type"], result["data"]
                 )
-                return {
-                    "intent": "SQL_QUERY",
-                    "query": query,
-                    "sql_trace": {"query": result["sql_query"], "params": result["sql_params"]},
-                    "semantic_results": None,
-                    "response": response_md,
-                }
-            # SQL failed → fall through to semantic
-            intent = "SEMANTIC_QUERY"
-            logger.warning("[QueryRouter] SQL execution failed, falling back to SEMANTIC_QUERY")
+                raw_chunks.append(sql_context)
+                sql_trace = {"query": result["sql_query"], "params": result["sql_params"]}
+                
+                # Retrieve auxiliary semantic context as well to make it hybrid-enriched
+                query_lower = query.lower()
+                collections = self._pick_collections(query_lower)
+                for col in collections:
+                    hits = self.retriever.retrieve_with_metadata(query, col, limit=2)
+                    semantic_results.extend(hits)
+                    raw_chunks.extend([h["document"] for h in hits])
+            else:
+                # If SQL fails or returns empty, fallback retrieval focus to SEMANTIC
+                intent = "SEMANTIC_FOCUSED"
+                logger.warning("[QueryRouter] SQL execution empty, falling back to SEMANTIC_FOCUSED")
 
-        # ── SEMANTIC PATH ────────────────────────────────────────────────────
-        if intent == "SEMANTIC_QUERY":
+        # ── SEMANTIC RETRIEVAL PATHWAY ──────────────────────────────────────
+        if intent == "SEMANTIC_FOCUSED":
             query_lower = query.lower()
             collections = self._pick_collections(query_lower)
 
-            semantic_results = []
             for col in collections:
                 hits = self.retriever.retrieve_with_metadata(query, col, limit=3)
                 semantic_results.extend(hits)
+                raw_chunks.extend([h["document"] for h in hits])
 
-            # Deduplicate by document id
-            seen_ids = set()
-            deduped = []
-            for r in semantic_results:
-                if r["id"] not in seen_ids:
-                    seen_ids.add(r["id"])
-                    deduped.append(r)
-
-            logger.info(
-                f"[QueryRouter] SEMANTIC | Collections={collections} | "
-                f"Results={len(deduped)}"
-            )
-
-            response_md = self.response_builder.build_semantic_response(deduped)
-            return {
-                "intent": "SEMANTIC_QUERY",
-                "query": query,
-                "sql_trace": None,
-                "semantic_results": deduped,
-                "response": response_md,
-            }
-
-        # ── REASONING PATH (Gemini) ──────────────────────────────────────────
-        query_lower = query.lower()
-        collections = self._pick_collections(query_lower)
-
-        raw_chunks: List[str] = []
-        semantic_results = []
-        for col in collections:
-            hits = self.retriever.retrieve_with_metadata(query, col, limit=3)
-            semantic_results.extend(hits)
-            raw_chunks.extend([h["document"] for h in hits])
-
-        # Add summary context if relevant
-        summary_hits = self.retriever.retrieve_with_metadata(query, "meeting_summaries", limit=1)
-        for s in summary_hits:
-            raw_chunks.append(f"Summary of {s['metadata'].get('title', 'Meeting')}: {s['document']}")
-
-        # Enrich with top active risks and open escalations (max 3 each)
-        session = SessionLocal()
-        try:
-            active_risks = session.query(Risk).filter(Risk.status == "Active").limit(3).all()
-            if active_risks:
-                risk_text = "Active Risks:\n" + "\n".join(
-                    [f"- {r.title} (Severity: {r.severity}, Project: {r.project_name})" for r in active_risks]
+        # ── REASONING RETRIEVAL PATHWAY ─────────────────────────────────────
+        if intent == "REASONING_FOCUSED":
+            # 1. Fetch relevant SQL context if applicable
+            sql_result = SQLQueryInterpreter.interpret_and_execute(query)
+            if sql_result["success"] and sql_result["data"]:
+                sql_context = self.response_builder.format_sql_facts(
+                    sql_result["result_type"], sql_result["data"]
                 )
-                raw_chunks.append(risk_text)
+                raw_chunks.append(sql_context)
+                sql_trace = {"query": sql_result["sql_query"], "params": sql_result["sql_params"]}
 
-            open_escs = session.query(Escalation).filter(Escalation.status == "Open").limit(3).all()
-            if open_escs:
-                esc_text = "Open Escalations:\n" + "\n".join(
-                    [f"- {e.title} (Assigned: {e.assigned_to}, Severity: {e.severity}, Project: {e.project_name})" for e in open_escs]
-                )
-                raw_chunks.append(esc_text)
-        except Exception as e:
-            logger.warning(f"[QueryRouter] SQLite enrichment failed: {e}")
-        finally:
-            session.close()
+            # 2. Fetch semantic matches
+            query_lower = query.lower()
+            collections = self._pick_collections(query_lower)
+            for col in collections:
+                hits = self.retriever.retrieve_with_metadata(query, col, limit=3)
+                semantic_results.extend(hits)
+                raw_chunks.extend([h["document"] for h in hits])
 
-        # ── CONTEXT COMPRESSION (max 900 words before Gemini) ────────────────
+            # 3. Add summary context
+            summary_hits = self.retriever.retrieve_with_metadata(query, "meeting_summaries", limit=1)
+            for s in summary_hits:
+                raw_chunks.append(f"Summary of {s['metadata'].get('title', 'Meeting')}: {s['document']}")
+
+            # 4. Enrich with active project facts (risks & escalations)
+            session = SessionLocal()
+            try:
+                active_risks = session.query(Risk).filter(Risk.status == "Active").limit(3).all()
+                if active_risks:
+                    risk_text = "Active Risks:\n" + "\n".join(
+                        [f"- {r.title} (Severity: {r.severity}, Project: {r.project_name})" for r in active_risks]
+                    )
+                    raw_chunks.append(risk_text)
+
+                open_escs = session.query(Escalation).filter(Escalation.status == "Open").limit(3).all()
+                if open_escs:
+                    esc_text = "Open Escalations:\n" + "\n".join(
+                        [f"- {e.title} (Assigned: {e.assigned_to}, Severity: {e.severity}, Project: {e.project_name})" for e in open_escs]
+                    )
+                    raw_chunks.append(esc_text)
+            except Exception as e:
+                logger.warning(f"[QueryRouter] SQLite enrichment failed: {e}")
+            finally:
+                session.close()
+
+        # ── DEDUPLICATE CITATIONS & BUILD CONTEXT ───────────────────────────
+        seen_ids = set()
+        deduped_semantic = []
+        for r in semantic_results:
+            if r["id"] not in seen_ids:
+                seen_ids.add(r["id"])
+                deduped_semantic.append(r)
+
+        # Build context string constrained strictly by the 900-word limit
         compressed_context = build_compressed_context(raw_chunks)
 
+        # Always generate final answer using Gemini
         gemini_response = self.response_builder.build_synthesized_response(
             query, [compressed_context]
         )
 
         return {
-            "intent": "REASONING_QUERY",
+            "intent": intent,
             "query": query,
-            "sql_trace": None,
-            "semantic_results": semantic_results,
+            "sql_trace": sql_trace,
+            "semantic_results": deduped_semantic,
             "response": gemini_response,
         }
+

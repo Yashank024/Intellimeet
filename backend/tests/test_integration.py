@@ -16,12 +16,14 @@ def run_integration_test():
     print("=== STARTING INTEGRATION TEST ===")
     
     # 1. Reset database for clean test
-    if os.path.exists("meeting_data.db"):
-        os.remove("meeting_data.db")
-    if os.path.exists("chroma_db"):
-        shutil.rmtree("chroma_db")
-        
-    print("Database and Chroma cache reset.")
+    try:
+        if os.path.exists("meeting_data.db"):
+            os.remove("meeting_data.db")
+        if os.path.exists("chroma_db"):
+            shutil.rmtree("chroma_db")
+        print("Database and Chroma cache reset successfully.")
+    except PermissionError:
+        print("[Warning] Database or ChromaDB is locked by another process (e.g. uvicorn). Skipping reset and running test on active DB.")
     
     # 2. Setup database and seed
     Database.initialize_schema()

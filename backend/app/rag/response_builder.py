@@ -16,55 +16,89 @@ class ResponseBuilder:
             return "No matching context was found to synthesize an answer."
         return self.gemini_service.answer_query(context_chunks, query)
 
-    def build_semantic_response(self, results: List[Dict[str, Any]]) -> str:
+    def format_sql_facts(self, result_type: str, data: List[Dict[str, Any]]) -> str:
         """
-        Formats list of ChromaDB document matches into markdown format.
+        Formats SQLite table rows into a plain-text context block of facts.
+        """
+        if not data:
+            return f"No records found in database for {result_type}."
+            
+        lines = [f"Retrieved SQL Facts ({result_type}):"]
+        for row in data:
+            if result_type == "tasks":
+                lines.append(
+                    f"- Task ID {row.get('id')}: \"{row.get('title')}\" | "
+                    f"Assigned to: {row.get('assigned_to')} | "
+                    f"Due Date: {row.get('due_date')} | "
+                    f"Status: {row.get('status')} | "
+                    f"Project: {row.get('project_name')} | "
+                    f"Source Text: \"{row.get('source_text')}\""
+                )
+            elif result_type == "escalations":
+                lines.append(
+                    f"- Escalation ID {row.get('id')}: \"{row.get('title')}\" | "
+                    f"Assigned to: {row.get('assigned_to')} | "
+                    f"Severity: {row.get('severity')} | "
+                    f"Status: {row.get('status')} | "
+                    f"Project: {row.get('project_name')} | "
+                    f"Source Text: \"{row.get('source_text')}\""
+                )
+            elif result_type == "risks":
+                lines.append(
+                    f"- Risk ID {row.get('id')}: \"{row.get('title')}\" | "
+                    f"Severity: {row.get('severity')} | "
+                    f"Status: {row.get('status')} | "
+                    f"Mitigation: {row.get('mitigation_plan')} | "
+                    f"Project: {row.get('project_name')} | "
+                    f"Source Text: \"{row.get('source_text')}\""
+                )
+            elif result_type == "decisions":
+                lines.append(
+                    f"- Decision ID {row.get('id')}: \"{row.get('title')}\" | "
+                    f"Context: {row.get('context')} | "
+                    f"Project: {row.get('project_name')} | "
+                    f"Source Text: \"{row.get('source_text')}\""
+                )
+            elif result_type == "meetings":
+                lines.append(
+                    f"- Meeting ID {row.get('id')}: \"{row.get('title')}\" | "
+                    f"Project: {row.get('project_name')} | "
+                    f"Date: {row.get('date')} | "
+                    f"Duration: {row.get('duration')} | "
+                    f"Summary: \"{row.get('summary')}\""
+                )
+            elif result_type == "projects":
+                lines.append(
+                    f"- Project ID {row.get('id')}: \"{row.get('name')}\" | "
+                    f"Risk Score: {row.get('risk_score')} | "
+                    f"Status: {row.get('status')}"
+                )
+            elif result_type == "count":
+                lines.append(f"- Count: {row.get('count')} | Description: {row.get('label')}")
+            else:
+                items = [f"{k}: {v}" for k, v in row.items()]
+                lines.append(f"- Record: " + ", ".join(items))
+                
+        return "\n".join(lines)
+
+    def format_chroma_context(self, results: List[Dict[str, Any]]) -> str:
+        """
+        Formats list of ChromaDB document matches into plain-text context paragraphs.
         """
         if not results:
-            return "No matching semantic results found in ChromaDB vector space."
+            return "No matching semantic results found in vector space."
             
-        md = "### ChromaDB Semantic Vector Matches\n\n"
+        lines = ["Retrieved Chroma Context:"]
         for idx, res in enumerate(results):
             meta = res.get("metadata", {})
             project = meta.get("project_name", "Unknown")
             title = meta.get("title", "Meeting")
             date = meta.get("date", "N/A")
+            document = res.get("document", "").strip()
             
-            md += f"{idx+1}. **Project**: {project} | **Meeting**: {title} ({date})\n"
-            md += f"   > *\"{res.get('document', '')}\"*\n\n"
-        return md
+            lines.append(
+                f"{idx+1}. Project: {project} | Meeting: {title} ({date}) | "
+                f"Excerpt: \"{document}\""
+            )
+        return "\n".join(lines)
 
-    def build_sql_response(self, result_type: str, data: List[Dict[str, Any]]) -> str:
-        """
-        Formats relational table rows into structured markdown tables.
-        """
-        if not data:
-            return f"No records found in SQLite for {result_type}."
-            
-        md = f"### SQLite Relational Facts ({result_type.capitalize()})\n\n"
-        
-        if result_type == "tasks":
-            md += "| ID | Title | Assignee | Due Date | Status | Project | Source Transcript Snippet |\n"
-            md += "|---|---|---|---|---|---|---|\n"
-            for row in data:
-                md += f"| {row.get('id')} | {row.get('title')} | {row.get('assigned_to')} | {row.get('due_date')} | {row.get('status')} | {row.get('project_name')} | *\"{row.get('source_text')}\"* |\n"
-        elif result_type == "escalations":
-            md += "| ID | Title | Assigned To | Severity | Status | Project | Source Transcript Snippet |\n"
-            md += "|---|---|---|---|---|---|---|\n"
-            for row in data:
-                md += f"| {row.get('id')} | {row.get('title')} | {row.get('assigned_to')} | {row.get('severity')} | {row.get('status')} | {row.get('project_name')} | *\"{row.get('source_text')}\"* |\n"
-        elif result_type == "risks":
-            md += "| ID | Title | Severity | Status | Mitigation Plan | Project | Source Transcript Snippet |\n"
-            md += "|---|---|---|---|---|---|---|\n"
-            for row in data:
-                md += f"| {row.get('id')} | {row.get('title')} | {row.get('severity')} | {row.get('status')} | {row.get('mitigation_plan')} | {row.get('project_name')} | *\"{row.get('source_text')}\"* |\n"
-        elif result_type == "decisions":
-            md += "| ID | Decision | Context | Project | Source Transcript Snippet |\n"
-            md += "|---|---|---|---|---|\n"
-            for row in data:
-                md += f"| {row.get('id')} | {row.get('title')} | {row.get('context')} | {row.get('project_name')} | *\"{row.get('source_text')}\"* |\n"
-        else:
-            for row in data:
-                items = [f"**{k}**: {v}" for k, v in row.items()]
-                md += f"- " + ", ".join(items) + "\n"
-        return md

@@ -1,492 +1,578 @@
-# IntelliMeet: Intelligent Meeting Intelligence & Escalation Tracking System
+# IntelliMeet
 
-An AI-powered organizational intelligence system built for the GenAI Hackathon. IntelliMeet ingests unstructured meeting discussions (raw transcripts, text notes, PDFs, or scanned images), automatically extracts structured data using Gemini AI and PaddleOCR, stores it in SQLite and ChromaDB, calculates project risk scores, and automates task-assignment notifications via email.
+### AI-Powered Meeting Intelligence & Escalation Tracking System
 
----
-
-## 🚀 Project Overview
-
-Modern organizations lose critical knowledge in the daily flood of meetings. Key action items, project blockers, and team dependencies get buried in long recordings or chat threads. **IntelliMeet** solves this by converting unstructured meeting content into structured, actionable business intelligence.
-
-### Core Capabilities
-1. **Multimodal Ingestion**: Ingest raw transcripts, text summaries, or documents (PDFs, images) using **PaddleOCR** for text extraction.
-2. **Structured AI Extraction**: Process text with **Gemini AI** to extract projects, tasks, owners, deadlines, blockers, risks, escalations, decisions, and teams.
-3. **Hybrid Database Architecture**: 
-   - **SQLite**: Structured business data (employees, tasks, escalations, risk scores) for exact, high-performance relational queries.
-   - **ChromaDB**: Semantic vector store for full transcripts and summary chunks to power deep, natural language RAG (Retrieval-Augmented Generation) queries.
-4. **Measurable Intelligence (Risk Scoring Engine)**: Live project health metrics calculated automatically:
-   $$\text{Risk Score} = (\text{Open Escalations} \times 5) + (\text{Open Risks} \times 3) + (\text{Overdue Tasks} \times 2)$$
-5. **AI $\rightarrow$ Action $\rightarrow$ Accountability**: Automated email notification system utilizing SMTP to alert owners of new task assignments immediately.
-6. **Conversational Querying (RAG)**: Ask natural language questions like *"Which projects are at risk this week?"* or *"Who is working on the Backend API?"* with accurate, context-aware answers.
+> **Transforming unstructured organizational conversations into structured, actionable business intelligence.**
 
 ---
 
-## 🛠️ Technology Stack
-
-| Layer | Technology | Rationale |
-|---|---|---|
-| **Frontend** | Next.js (App Router), Tailwind CSS, Shadcn/ui | Premium, modern UI; fast and interactive dashboard components. |
-| **Backend** | FastAPI (Python) | High performance, automatic OpenAPI docs, seamless integration with Python AI tools. |
-| **Extraction AI** | Gemini API | Native JSON mode capability, long context window, high accuracy. |
-| **OCR Engine** | PaddleOCR | Robust document and image-based text extraction. |
-| **Structured Store** | SQLite | Zero-config, single-file database, ideal for same-day hackathon speed and reliability. |
-| **Vector Database** | ChromaDB | Lightweight local vector database for semantic search and RAG. |
-| **Alert Engine** | SMTP | Simple, universally supported protocol for automated accountability emails. |
+IntelliMeet is a production-grade, event-driven organizational intelligence system designed to capture, extract, store, and act on meeting conversations. Built with **FastAPI**, **Next.js**, **SQLite**, and **ChromaDB**, IntelliMeet ingests raw transcripts, meeting notes, PDFs, or scanned documents, processes them using a dual **PyMuPDF / PaddleOCR** document processing engine, extracts structured facts using **Gemini AI**, indexes chunks into semantic vector databases, and automatically dispatches async task notifications and deadline reminders via **Resend**. A conversational RAG assistant leverages the hybrid SQLite/ChromaDB retrieval engine to synthesize answers to user queries with full source traceability, ensuring that no action item is lost, no blocker goes unnoticed, and organizational decisions remain permanently accessible.
 
 ---
 
-## 🗄️ Database Architecture
-
-To ensure speed and accurate data querying, IntelliMeet splits data storage between relational (SQLite) and semantic (ChromaDB) databases.
-
-```
-                  ┌──────────────────────────────┐
-                  │   Meeting Ingestion Pipeline │
-                  └──────────────┬───────────────┘
-                                 │
-                     [ PaddleOCR / Raw Text ]
-                                 │
-                                 ▼
-                         [ Gemini AI ]
-                                 │
-                                 ▼
-                     ┌───────────┴───────────┐
-                     │  Structured Extractor │
-                     └─────┬───────────┬─────┘
-                           │           │
-             [SQLite]      │           │      [ChromaDB]
-             (Relational)  ▼           ▼      (Semantic Vector)
-             ┌─────────────────┐   ┌───────────────────────────┐
-             │ - Employees     │   │ - Transcript Chunks       │
-             │ - Projects      │   │ - Meeting Summaries       │
-             │ - Tasks         │   │ - Risks & Escalations     │
-             │ - Escalations   │   │ - Key Decisions           │
-             │ - Risks         │   └───────────────────────────┘
-             │ - Decisions     │
-             └─────────────────┘
-```
-
-### 1. SQLite Relational Schema
-SQLite stores structured, relational business entities. Below are the table schemas used:
-
-#### `employees`
-Stores organization members. Used for resolving task owners and mapping email notifications.
-```sql
-CREATE TABLE employees (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
-    email TEXT NOT NULL UNIQUE,
-    team TEXT NOT NULL,
-    role TEXT NOT NULL
-);
-```
-
-#### `meetings`
-Stores basic details and transcripts of ingested meetings.
-```sql
-CREATE TABLE meetings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT NOT NULL,
-    date TEXT DEFAULT CURRENT_TIMESTAMP,
-    transcript TEXT NOT NULL,
-    summary TEXT NOT NULL
-);
-```
-
-#### `projects`
-Stores high-level initiatives. `risk_score` is updated dynamically by the scoring engine.
-```sql
-CREATE TABLE projects (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
-    status TEXT NOT NULL DEFAULT 'Active', -- Active, Completed, On Hold
-    priority TEXT NOT NULL DEFAULT 'Medium', -- Low, Medium, High
-    risk_score INTEGER DEFAULT 0
-);
-```
-
-#### `tasks`
-Trackable action items extracted from meetings.
-```sql
-CREATE TABLE tasks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id INTEGER,
-    owner_id INTEGER,
-    task TEXT NOT NULL,
-    deadline TEXT, -- Raw text or parsed ISO format
-    status TEXT NOT NULL DEFAULT 'Pending', -- Pending, Completed, Overdue
-    priority TEXT NOT NULL DEFAULT 'Medium', -- Low, Medium, High
-    FOREIGN KEY(project_id) REFERENCES projects(id),
-    FOREIGN KEY(owner_id) REFERENCES employees(id)
-);
-```
-
-#### `escalations`
-Critical blockers raised by team members that require immediate leadership attention.
-```sql
-CREATE TABLE escalations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id INTEGER,
-    raised_by INTEGER,
-    description TEXT NOT NULL,
-    severity TEXT NOT NULL DEFAULT 'Medium', -- Medium, High, Critical
-    status TEXT NOT NULL DEFAULT 'Open', -- Open, Resolved
-    FOREIGN KEY(project_id) REFERENCES projects(id),
-    FOREIGN KEY(raised_by) REFERENCES employees(id)
-);
-```
-
-#### `risks`
-Identified operational or timeline risks that might impact deliverables.
-```sql
-CREATE TABLE risks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id INTEGER,
-    description TEXT NOT NULL,
-    severity TEXT NOT NULL DEFAULT 'Medium', -- Low, Medium, High
-    status TEXT NOT NULL DEFAULT 'Active', -- Active, Mitigated
-    FOREIGN KEY(project_id) REFERENCES projects(id)
-);
-```
-
-#### `decisions`
-Key agreements and architecture resolutions made in the meeting.
-```sql
-CREATE TABLE decisions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id INTEGER,
-    decision TEXT NOT NULL,
-    reason TEXT,
-    FOREIGN KEY(project_id) REFERENCES projects(id)
-);
-```
-
-### 2. ChromaDB Collections
-ChromaDB stores raw, searchable texts as vector embeddings to support semantic queries:
-
-*   **`meeting_transcripts`**: Stores meeting transcripts broken down into smaller chunks (500–1000 characters) with metadata (`meeting_id`, `title`, `date`).
-*   **`meeting_summaries`**: Stores raw summaries mapped to `meeting_id` and `project_id`.
-*   **`risks_vectors`**: Stores text descriptions of risks to check for duplicate risks or similar blocker mentions.
-*   **`escalations_vectors`**: Stores escalation texts to match future discussions with existing open issues.
+## 📂 Table of Contents
+1. [Problem Statement](#-problem-statement)
+2. [Our Understanding](#-our-understanding)
+3. [Solution Overview](#-solution-overview)
+4. [Key Features](#-key-features)
+5. [System Overview](#-system-overview)
+6. [Complete System Architecture](#-complete-system-architecture)
+7. [Document Ingestion Pipeline](#-document-ingestion-pipeline)
+8. [RAG Pipeline](#-rag-pipeline)
+9. [Database Design](#-database-design)
+10. [Vector Database Design](#-vector-database-design)
+11. [AI Architecture](#-ai-architecture)
+12. [Production-Grade Implementation](#-production-grade-implementation)
+13. [API Endpoints](#-api-endpoints)
+14. [Email Automation](#-email-automation)
+15. [Tech Stack](#-tech-stack)
+16. [Project Structure](#-project-structure)
+17. [Installation Guide](#-installation-guide)
+18. [Environment Variables](#-environment-variables)
+19. [Demo Workflow](#-demo-workflow)
+20. [Performance & Scalability](#-performance--scalability)
+21. [Security Considerations](#-security-considerations)
+22. [Future Roadmap](#-future-roadmap)
+23. [Team & Author](#-team--author)
+24. [Conclusion](#-conclusion)
 
 ---
 
-## 📊 Frontend Architecture & Dashboards
+## ⚠️ Problem Statement
 
-The frontend uses Next.js with a premium, responsive layout. It is structured into **5 main pages** for the hackathon demo:
+In modern fast-paced enterprises, hundreds of virtual and physical meetings occur daily. Important information gets scattered and buried inside hours of meeting recordings, lengthy text transcripts, chaotic meeting notes, and disjointed team summaries. 
 
-### 1. `/` - Executive Dashboard
-A dashboard designed for leadership and project managers. Includes:
-*   **6 Key Metrics Cards**:
-    *   *Total Meetings* (Count of records in `meetings`)
-    *   *Open Tasks* (Count of pending tasks)
-    *   *Open Escalations* (Count of open escalations)
-    *   *Projects At Risk* (Count of projects with Risk Score > 10)
-    *   *Overdue Tasks* (Count of past-deadline pending tasks)
-    *   *High Severity Risks* (Count of Active risks marked High or Critical)
-*   **Unresolved Escalations Table**: Lists current escalations, severity levels, raised-by details, and projects.
-*   **Project Health Chart**: A responsive bar chart displaying the calculated Risk Score of each project.
+The consequences of this "knowledge leakage" are severe:
+*   **Lost Accountability**: Critical action items are spoken but never written down, leading to missing ownership.
+*   **Hidden Blockers**: Escalations and project risks are raised in discussion but fail to reach engineering leadership.
+*   **Missed Deadlines**: Unresolved tasks slip through the cracks, delaying core milestones and product launches.
+*   **Leadership Blindspots**: Executives lack real-time visibility into project health, resource bottlenecks, and strategic decisions.
 
-### 2. `/upload` - Ingestion Pipeline
-An interactive portal that handles ingestion:
-*   **Form Inputs**: Meeting Title, Date, and Source Selection (Raw Transcript Text, Scanned Document Text, or PDF/Image file upload).
-*   **OCR Processing State**: Visual progress indicator showing PaddleOCR extracting text.
-*   **Gemini Extraction Preview**: Live JSON syntax highlighter showing the exact extracted object before confirmation.
-*   **Save Action**: Saves to SQLite, embeds into ChromaDB, and triggers notifications.
-
-### 3. `/meetings` - Meeting History
-A timeline view of the organization's discussions:
-*   Lists all meetings processed.
-*   Detail views for each meeting showing its full transcript, AI-generated summary, and tabs for extracted tasks, risks, and decisions.
-
-### 4. `/chat` - Ask Questions (RAG Center)
-A natural language conversational interface:
-*   **Hybrid Route Dispatcher**:
-    *   If a user asks structured query types (*"Show unresolved escalations"* or *"Show all tasks assigned to Rahul"*), the system bypasses the LLM and runs a direct SQLite SQL query.
-    *   If a user asks context/historical queries (*"Which meetings discussed Vendor API issues?"*), the backend performs a similarity search in ChromaDB to retrieve matching transcript sections and synthesizes the answer using Gemini.
-
-### 5. `/escalations` - Risk & Escalation Center
-A dedicated board focusing purely on bottlenecks:
-*   **Risk Heatmap**: Visualization of issues categorized by Project, Severity, and Status.
-*   **Interactive Status Toggles**: Quickly mark tasks as Completed or escalations as Resolved, which updates the Project Risk Score in real time.
+### Business Impact
+Organizations waste thousands of engineering hours manually compiling notes, tracking down task statuses, and resolving communication gaps, resulting in project slippage, client churn, and decreased operational velocity.
 
 ---
 
-## 🔄 Data & Notification Flow
+## 💡 Our Understanding
+
+### Why Traditional Solutions Fail
+1.  **Manual Meeting Notes**: Relying on team members to manually summarize meetings introduces human bias, takes valuable time, and remains disconnected from operational tracking databases (Jira, SQLite).
+2.  **Generic Transcriptions**: Raw speech-to-text outputs are too verbose. A 1-hour transcript can exceed 8,000 words; search is noisy, and critical action items are buried in casual conversational fillers.
+3.  **Basic RAG Systems**: Sending the entire raw transcript to LLMs for every query leads to high latency, exorbitant API costs, context window dilution, and hallucinations.
+
+### The Enterprise Challenge
+An effective enterprise intelligence system must decouple **Ingestion (Stage 1)** from **Retrieval/Chat (Stage 2)**. During Ingestion, the system must process the complete, raw document (without word limits or truncation) to extract structured database facts. During Retrieval, it must leverage hybrid database routing (relational lookup + semantic search) to compile highly compressed context (max 900 words) so that LLM reasoning remains fast, cheap, and highly factual.
+
+---
+
+## 🛠️ Solution Overview
+
+IntelliMeet bridges the gap between unstructured meeting artifacts and relational operational systems:
 
 ```
-                      ┌──────────────────────┐
-                      │ Meeting Content Upload│
-                      └──────────┬───────────┘
-                                 │
-                                 ▼
-                      ┌──────────────────────┐
-                      │      PaddleOCR       │
-                      │ (Extracts Raw Text)  │
-                      └──────────┬───────────┘
-                                 │
-                                 ▼
-                      ┌──────────────────────┐
-                      │    Gemini API        │
-                      │  (JSON Extraction)   │
-                      └──────────┬───────────┘
-                                 │
-                                 ▼
-                     ┌────────────────────────┐
-                     │ SQLite & Chroma Insert │
-                     └──────────┬─────────────┘
-                                │
-                    ┌───────────┴───────────┐
-                    │  Did we find new tasks│
-                    │   assigned to owners? │
-                    └───────────┬───────────┘
-                                │ Yes
-                                ▼
-                     ┌──────────────────────┐
-                     │ Look up Owner Email  │
-                     │  in sqlite database  │
-                     └──────────┬───────────┘
-                                │
-                                ▼
-                     ┌──────────────────────┐
-                     │   Trigger SMTP Server │
-                     │ Send Notification Email│
-                     └──────────────────────┘
+[Unstructured Input]  ──►  [IntelliMeet Engine]  ──►  [Structured Intelligence]
+- Raw Transcripts          - PaddleOCR / PyMuPDF     - Tasks & Assignees
+- Scanned Meeting PDF      - Gemini JSON Extraction  - Risks & Mitigation Plans
+- PNG Diagrams/Notes       - Sentence Transformers   - Escalations & Blockers
+- Copy-pasted text         - Event Dispatcher Bus    - Decisions & Deadlines
 ```
 
-### AI Extraction Schema (Gemini System Prompt Format)
-We prompt Gemini to return a strict, parsable JSON structure:
-```json
-{
-  "project": "Payment Integration",
-  "teams": ["Backend Team", "Vendor QA"],
-  "tasks": [
-    {
-      "owner": "Rahul",
-      "task": "Coordinate with backend team",
-      "deadline": "Friday",
-      "priority": "High"
-    }
-  ],
-  "blockers": [
-    {
-      "description": "Vendor API instability"
-    }
-  ],
-  "risks": [
-    {
-      "description": "Phase 2 release delay",
-      "severity": "High"
-    }
-  ],
-  "escalations": [
-    {
-      "raised_by": "Priya",
-      "description": "Escalated payment integration delays to leadership",
-      "severity": "Critical"
-    }
-  ],
-  "decisions": [
-    {
-      "decision": "Defer non-critical Phase 2 features",
-      "reason": "Unstable vendor API is blocking progress"
-    }
-  ]
-}
+By mapping every task, risk, escalation, and decision back to its original meeting transcript snippet and chunk ID, IntelliMeet ensures **100% source traceability**, allowing team members to verify the context of any database entry in one click.
+
+---
+
+## ✨ Key Features
+
+### 📦 Ingestion & Core Extraction
+*   **1. Meeting Intelligence Extraction**: Automates JSON-mode extraction using Gemini to extract projects, tasks, due dates, severities, decisions, and source snippets.
+*   **2. OCR-Powered Document Processing**: Automatically handles digital PDFs (via PyMuPDF) and scanned documents/images (via PaddleOCR fallback).
+*   **3. Source Traceability**: Every relational fact (task/risk/escalation) is stored with `source_meeting_id`, `source_chunk_id`, and `source_text` for auditing.
+
+### 📊 Management & Dashboards
+*   **4. AI-Powered Risk Detection**: Automatically calculates project risk scores based on pending tasks (2 pts), active risks (3 pts), and open escalations (5 pts).
+*   **5. Escalation & Task Tracking**: Interactive Next.js tables display live task status, allowing PMs to update statuses which automatically triggers project risk recalculations.
+*   **6. Executive Dashboards**: Real-time KPI cards display total meetings, open tasks, overdue milestones, active risks, and high-risk projects.
+
+### 🔍 Retrieval & Conversational UI
+*   **7. Semantic Vector Search**: Embeds transcripts using `all-MiniLM-L6-v2` and indexes them across 5 dedicated ChromaDB collections.
+*   **8. Conversational RAG Assistant**: A custom chatbot that utilizes query-time classification (`SQL_FOCUSED`, `SEMANTIC_FOCUSED`, `REASONING_FOCUSED`) to retrieve relevant records, compile a 900-word context, and synthesize final narrative answers.
+
+### ✉️ Event-Driven Orchestration
+*   **9. Asynchronous Event Dispatcher**: Employs an in-memory queue and background thread dispatcher to handle notification alerts.
+*   **10. Automated Email Alerts**: Integrates with the **Resend API** to trigger emails for meetings processed, tasks assigned, escalations raised, and 24-hour deadline reminders.
+
+---
+
+## 💻 System Overview
+
+The application is split into highly isolated modules following the **Single Responsibility Principle**:
+
+1.  **Frontend (Next.js)**: A premium responsive user interface built using vanilla CSS variables, Outfit/Outfit-sans typography, custom transitions, dashboard cards, task management grids, and a conversational chat console with collapsible database traces.
+2.  **Backend (FastAPI)**: REST API gateway serving routes for file uploads, dashboard statistics, meeting listings, risk/escalation updates, and chat responses.
+3.  **RAG Layer**: Includes the `Embedder` (SentenceTransformers), `Retriever` (ChromaDB queries with a `0.75` similarity threshold), and `ContextBuilder` (aggregates context and compresses to a max of 900 words).
+4.  **Database Layer (SQLAlchemy + SQLite)**: Persistent store for relational tables with strict foreign key constraints (`PRAGMA foreign_keys=ON`).
+5.  **Notification Layer (Resend)**: Handles SMTP API calls to Resend.
+6.  **AI Layer (Gemini Service)**: Interfaces with the Gemini API for structured JSON extraction and RAG answer synthesis.
+
+---
+
+## 📐 Complete System Architecture
+
+Here is the technical blueprint mapping the components, API routing boundaries, and databases in our Enterprise RAG cluster:
+
 ```
-
-### Automated Task Assignment Email Template
-```
-Subject: [IntelliMeet] New Task Assigned: Coordinate with backend team
-
-Hi Rahul,
-
-A new action item has been automatically extracted and assigned to you from today's meeting.
-
-📋 Task: Coordinate with backend team
-📅 Deadline: Friday
-🔥 Priority: High
-📂 Project: Payment Integration
-
-Please review this task and update its progress in the dashboard when completed.
-
-Best regards,
-IntelliMeet Notification Bot
++-------------------------------------------------------------+
+|                     Next.js WEB FRONTEND                    |
+|          (React 19, TS, CSS Variables UI Components)        |
++-------------------------------------------------------------+
+                              │
+                     [HTTP API JSON REST]
+                              │
+                              ▼
++-------------------------------------------------------------+
+|                       FastAPI BACKEND                       |
+|           (Main Gateway, Uvicorn, Router Modules)           |
++-------------------------------------------------------------+
+            /                 │                 \
+           /                  │                  \
+          ▼                   ▼                   ▼
++------------------+ +------------------+ +-------------------+
+|  SQLite DATABASE | | Chroma VECTOR DB | |    GEMINI AI      |
+| (SQLAlchemy ORM) | | (all-MiniLM-L6)  | |  (Structured/QA)  |
++------------------+ +------------------+ +-------------------+
+          ▲                   ▲                   ▲
+          │                   │                   │
+    [Recalculate]       [Add Chunks]        [Answer / Extract]
+          │                   │                   │
++------------------+          │                   │
+| EVENT DISPATCHER | ─────────+                   │
+|   (Queue/Bus)    |                              │
++------------------+                              │
+          │                                       │
+    [Daemon Worker]                               │
+          ▼                                       │
++------------------+                              │
+|    Resend SMTP   | ─────────────────────────────+
+|  (Email Alerts)  |
++------------------+
 ```
 
 ---
 
-## 📅 Hackathon Implementation Plan & Timeline
+## 📥 Document Ingestion Pipeline
 
-| Time Slot | Module | Target Deliverable | Status |
-|---|---|---|---|
-| **10:00 AM - 10:45 AM** | **Scaffolding & DB** | Scaffold FastAPI + Next.js projects; Initialize SQLite tables; Initialize ChromaDB. | 📝 Todo |
-| **10:45 AM - 12:00 PM** | **Extraction Pipeline** | Implement upload endpoints; Integrate PaddleOCR; Integrate Gemini JSON extraction; Write DB insertion logic. | 📝 Todo |
-| **12:00 PM - 01:00 PM** | **Dashboard & Tables** | Build Dashboard UI; Create Risk scoring calculator; Display charts and tables. | 📝 Todo |
-| **01:00 PM - 02:00 PM** | **Chat & RAG Engine** | Build `/chat` component; Implement SQLite structured query router; Integrate Chroma vector retrieval. | 📝 Todo |
-| **02:00 PM - 02:45 PM** | **Email Notifications** | Implement SMTP helper; Hook task inserts to email notifier; Calculate live project health scores. | 📝 Todo |
-| **02:45 PM - 03:15 PM** | **Polish & Seed Data** | Load employee profiles; Seed demo scripts; Test complete upload $\rightarrow$ extract $\rightarrow$ alert loop. | 📝 Todo |
-| **03:15 PM - 03:30 PM** | **Demo Prep** | Record video demo; Clean logs; Prepare pitch presentation. | 📝 Todo |
+During Ingestion, documents are processed in their entirety without word limits to ensure that all tasks, risks, and escalations are captured. Below is the ingestion pipeline sequence flow:
+
+```
+[User Document Upload] 
+         │
+         ▼
+[Document Processor] ────► (Digital PDF) ────► [PyMuPDF Parser] ────┐
+         │                                                           │
+         └───────────────► (Scanned / Image) ──► [PaddleOCR Engine] ─┤
+                                                                     ▼
+                                                             [Raw Text Extracted]
+                                                                     │
+                                                                     ▼
+                                                            [Gemini Extractor]
+                                                            (Strict JSON Mode)
+                                                                     │
+                                                                     ▼
+                                                          [Validation (Pydantic)]
+                                                                     │
+                                      ┌──────────────────────────────┴──────────────────────────────┐
+                                      ▼                                                             ▼
+                             [SQLite Relational DB]                                       [Chroma Vector Database]
+                           - Save Meeting Summary                                       - Segment into Paragraph Chunks
+                           - Save Tasks / Due Dates                                     - Generate Embeddings (all-MiniLM)
+                           - Save Risks / Escalations                                   - Index Chunks in vector space
+                                      │
+                                      ▼
+                             [Event Dispatch bus] ──► [Async Background Worker] ──► [Resend Email Notification]
+```
 
 ---
 
-## 🏃‍♂️ How to Run Locally
+## 🔍 RAG Pipeline
+
+For chat queries, the RAG pipeline optimizes speed and cost by limiting retrieval to relevant content, strictly enforcing a 900-word context window before calling Gemini.
+
+```
+                             [User Question]
+                                    │
+                                    ▼
+                          [Intent Classifier]
+                                    │
+          ┌─────────────────────────┼─────────────────────────┐
+          ▼                         ▼                         ▼
+   [SQL_FOCUSED]            [SEMANTIC_FOCUSED]       [REASONING_FOCUSED]
+          │                         │                         │
+          ▼                         ▼                         ▼
+  (SQLite Query)            (Chroma Vector Search)      (Retrieve SQLite Facts
+  Retrieve Tasks/Risks      Fetch top_k=3 chunks        + Chroma vector chunks
+  and escalations           with similarity >= 0.75     + summaries & projects)
+          │                         │                         │
+          └─────────────────────────┼─────────────────────────┘
+                                    │
+                                    ▼
+                             [Context Builder]
+                      (Rank Chunks & Merge context)
+                                    │
+                                    ▼
+                      [Context Cap: Max 900 Words]
+                                    │
+                                    ▼
+                             [Gemini Prompt]
+                   (Context + Question + System Inst.)
+                                    │
+                                    ▼
+                            [Gemini Synthesizer]
+                                    │
+                                    ▼
+                        [ narrative Final Answer ]
+```
+
+### Context Builder Constraints
+*   **Similarity Threshold (`0.75`)**: Chroma distances (L2) are converted to similarity using `similarity = 1.0 / (1.0 + distance)`. Chunks below `0.75` are discarded.
+*   **Top_K (`3`)**: Retrieval fetches a maximum of 3 chunks per collection to keep context dense and high-quality.
+*   **Context Compression**: Chunks are sorted by informativeness (length proxy) and concatenated until the 900-word limit is reached. Excess text is truncated gracefully.
+
+---
+
+## 🗃️ Database Design
+
+SQLite manages the structured relationship tables with foreign key integrity. Here is the database ERD relationship schema:
+
+```
+ +---------------+            +---------------+
+ |   employees   |            |   projects    |
+ +---------------+            +---------------+
+ | id (PK)       |            | id (PK)       |
+ | name (UK)     |            | name (UK)     |
+ | email (UK)    |            | risk_score    |
+ | role, team    |            | status        |
+ +---------------+            +---------------+
+        │                            │
+        │ 1                          │ 1
+        │                            │
+        │ 0..*                       │ 0..*
+ +---------------+            +---------------+            +---------------+
+ |     tasks     | 0..*     1 |   meetings    | 1     0..* |   decisions   |
+ +---------------+------------+---------------+------------+---------------+
+ | id (PK)       |            | id (PK)       |            | id (PK)       |
+ | meeting_id(FK)|            | title         |            | meeting_id(FK)|
+ | proj_name (FK)|            | proj_name (FK)|            | proj_name (FK)|
+ | title         |            | date, duration|            | title         |
+ | assigned_to(FK)            | summary       |            | context       |
+ | due_date      |            | transcript    |            | source_text   |
+ | status        |            +---------------+            +---------------+
+ | source_text   |                   │
+ +---------------+                   │ 1
+                                     │
+                                     │ 0..*
+                              +---------------+            +---------------+
+                              |     risks     |            |  escalations  |
+                              +---------------+            +---------------+
+                              | id (PK)       |            | id (PK)       |
+                              | meeting_id(FK)|            | meeting_id(FK)|
+                              | proj_name (FK)|            | proj_name (FK)|
+                              | title         |            | title         |
+                              | severity      |            | severity      |
+                              | status        |            | status        |
+                              | mitigation    |            | assigned_to(FK)
+                              | source_text   |            | source_text   |
+                              +---------------+            +---------------+
+```
+
+---
+
+## 🗂️ Vector Database Design
+
+ChromaDB hosts 5 isolated vector collections to keep vector spaces clean and query targets optimized:
+
+| Collection Name | Document Source | Metadata Fields Indexed |
+| :--- | :--- | :--- |
+| `meeting_chunks` | Segmented meeting transcript paragraphs | `project_name`, `title`, `date`, `meeting_id`, `chunk_id` |
+| `meeting_summaries` | Meeting summary paragraphs | `project_name`, `title`, `date`, `meeting_id` |
+| `risks` | Extracted risk titles | `project_name`, `meeting_id`, `severity`, `mitigation_plan`, `source_chunk_id` |
+| `escalations` | Extracted escalation titles | `project_name`, `meeting_id`, `severity`, `assigned_to`, `source_chunk_id` |
+| `decisions` | Extracted decision titles | `project_name`, `meeting_id`, `context`, `source_chunk_id` |
+
+*Note: The system generates embeddings using the `all-MiniLM-L6-v2` model, producing dense 384-dimensional vectors.*
+
+---
+
+## 🧠 AI Architecture
+
+IntelliMeet structures its GenAI operations through dedicated services:
+
+### 1. Ingestion structured extraction
+*   **Prompting**: A detailed system instruction prompt (`extraction.txt`) enforces strict JSON-mode response formatting.
+*   **JSON Enforcement**: Instructs Gemini to return a raw JSON block containing meeting metadata, tasks, risks, escalations, and decisions.
+
+### 2. Conversational QA reasoning
+*   **Retrieval Optimization**: Query classification maps queries to `SQL_FOCUSED` (e.g. metadata counting/status filters), `SEMANTIC_FOCUSED` (conversational history), or `REASONING_FOCUSED` (cross-collection reasoning).
+*   **Synthesis**: Compiles the context structure, formats the prompt (`qa.txt`), and calls Gemini to generate a narrative final answer.
+
+### 3. Hallucination Prevention
+*   If no matching context chunks meet the `0.75` similarity threshold, the context builder passes an empty context. The prompt template instructs Gemini to state clearly that the answer cannot be found in the context rather than fabricating responses.
+
+---
+
+## 🚀 Production-Grade Implementation
+
+IntelliMeet is built using software patterns designed for stability and extensibility:
+*   **Single Responsibility Principle (SRP)**: Document processors, extraction logic, database interactions, event dispatching, and notification gateways are placed in distinct files.
+*   **Asynchronous Processing**: Background daemon worker threads prevent database transaction locks during slow external Resend API SMTP dispatches.
+*   **Pydantic Input Validation**: Schemas in `schema.py` validate the structures of API requests and responses.
+*   **Robust Error Handling**: Connection checks in the health route and database transaction rollbacks (`session.rollback()`) prevent data corruption in SQLite on failure.
+
+---
+
+## 🔌 API Endpoints
+
+The backend exposes the following REST API endpoints under the `/api` prefix:
+
+### Ingestion & Chat
+| Method | Endpoint | Purpose | Request Payload | Response Sample |
+| :--- | :--- | :--- | :--- | :--- |
+| `POST` | `/upload/` | Ingests transcripts or uploads files (PDF/images) | Form data: `title`, `project`, `text` (optional), `file` (optional) | `{"status": "success", "data": {"meeting_id": 1, "summary": "..."}}` |
+| `POST` | `/chat/` | Submits conversational queries to the RAG assistant | `{"query": "Show pending tasks"}` | `{"intent": "SQL_FOCUSED", "confidence": 0.97, "response": "..."}` |
+
+### Dashboard & Metrics
+| Method | Endpoint | Purpose | Request Payload | Response Sample |
+| :--- | :--- | :--- | :--- | :--- |
+| `GET` | `/dashboard/` | Returns aggregated statistics for dashboard cards | None | `{"total_meetings": 3, "open_tasks": 7, "active_risks": 2}` |
+| `GET` | `/meetings/` | Returns list of all ingested meetings | None | `{"meetings": [{"id": 1, "title": "Sprint Planning", "date": "..."}]}` |
+| `GET` | `/meetings/{id}` | Returns meeting detail tables and extracted items | None | `{"meeting": {...}, "tasks": [...], "risks": [...], "escalations": [...]}` |
+| `GET` | `/risks/` | Returns active project lists, risk cards, and tasks | None | `{"projects": [...], "risks": [...], "tasks": [...]}` |
+| `GET` | `/escalations/` | Returns all project escalation blockers | None | `{"escalations": [{"id": 1, "title": "Vendor API Blocked"}]}` |
+
+### System Updates & Diagnostics
+| Method | Endpoint | Purpose | Request Payload | Response Sample |
+| :--- | :--- | :--- | :--- | :--- |
+| `PUT` | `/risks/tasks/{id}/status` | Updates task status (Pending, Completed, Overdue) | Query parameter: `status` | `{"status": "success", "new_project_risk_score": 12}` |
+| `PUT` | `/escalations/{id}/status` | Updates escalation status (Open, Resolved) | Query parameter: `status` | `{"status": "success", "new_project_risk_score": 5}` |
+| `GET` | `/system/health` | Diagnostic status check of external/internal resources | None | `{"status": "online", "database": "healthy", "chromadb": "healthy"}` |
+
+---
+
+## ✉️ Email Automation
+
+Notifications run out-of-band to guarantee low API latency. Below is the event-driven notification flow:
+
+```
+ [Trigger Events] ────► [TaskAssignedEvent] ──────┐
+                  ────► [CriticalEscalationEvent] ├─► [Queue] ─► [Event Dispatcher]
+                  ────► [DeadlineReminderEvent] ──┘                    │
+                                                                       ▼
+                                                           [Background Daemon Worker]
+                                                                       │
+                                                                       ▼
+                                                           [Fetch HTML Template]
+                                                                       │
+                                                                       ▼
+                                                           [Resend API SDK Gateway]
+                                                                       │
+                                                                       ▼
+                                                           [Recipient Inbox Delivery]
+```
+
+---
+
+## 🛠️ Tech Stack
+
+### Frontend
+*   **Core**: HTML5, Next.js 15 (React 19), TypeScript
+*   **Styling**: Vanilla CSS Variables, Lucide React Iconset
+*   **State Management**: React Hooks (`useState`, `useEffect`, `useRef`)
+
+### Backend
+*   **HTTP Gateway**: FastAPI, Uvicorn, Pydantic
+*   **Relational Database**: SQLite, SQLAlchemy ORM
+*   **Vector Engine**: ChromaDB
+*   **AI Models**: Google Gemini (`gemini-2.5-flash`), SentenceTransformers (`all-MiniLM-L6-v2`)
+*   **Document Parsers**: PyMuPDF (`fitz`), PaddleOCR
+*   **Email Deliverability**: Resend Client SDK
+
+---
+
+## 📁 Project Structure
+
+```
+Intellimeet/
+├── backend/
+│   ├── app/
+│   │   ├── main.py                 # FastAPI Application bootstrap
+│   │   ├── routes/                 # Endpoint routing controllers
+│   │   │   ├── upload.py
+│   │   │   ├── chat.py
+│   │   │   ├── dashboard.py
+│   │   │   ├── meetings.py
+│   │   │   ├── risks.py
+│   │   │   ├── escalations.py
+│   │   │   └── health.py
+│   │   ├── database/               # Relational configurations
+│   │   │   ├── db.py
+│   │   │   ├── models.py
+│   │   │   ├── seed.py
+│   │   │   └── schema.py
+│   │   ├── services/               # OCR & Document extraction logic
+│   │   │   ├── document_processor.py
+│   │   │   ├── pymupdf_service.py
+│   │   │   ├── paddleocr_service.py
+│   │   │   ├── gemini_service.py
+│   │   │   ├── query_router.py
+│   │   │   └── deadline_scheduler.py
+│   │   ├── rag/                    # Vector retrieval & context building
+│   │   │   ├── chroma_service.py
+│   │   │   ├── embedder.py
+│   │   │   ├── retriever.py
+│   │   │   ├── chunker.py
+│   │   │   └── response_builder.py
+│   │   ├── notifications/          # Email formatting templates
+│   │   │   ├── notification_service.py
+│   │   │   ├── resend_service.py
+│   │   │   └── templates.py
+│   │   ├── events/                 # Pub-Sub Event Mediators
+│   │   │   ├── dispatcher.py
+│   │   │   └── events.py
+│   │   └── prompts/                # LLM System Text Prompts
+│   │       ├── extraction.txt
+│   │       └── qa.txt
+│   ├── requirements.txt            # Python dependencies list
+│   └── tests/                      # Integration verification scripts
+│       └── test_integration.py
+└── frontend/                       # Next.js web application
+```
+
+---
+
+## ⚙️ Installation Guide
 
 ### Prerequisites
-*   Python 3.10+
-*   Node.js v18+
-*   C++ Build Tools (Required for ChromaDB / SQLite extensions if building from source, or install binary wheels)
+*   Node.js (v18+)
+*   Python (v3.10+)
 
-### Setup Backend (FastAPI)
-1. Navigate to the backend directory:
-   ```bash
-   cd backend
-   ```
-2. Create and activate virtual environment:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
-3. Install dependencies:
-   ```bash
-   pip install fastapi uvicorn sqlite3 chromadb google-generativeai paddleocr paddlepaddle-tiny pydantic
-   ```
-4. Set environment variables (create a `.env` file):
-   ```env
-   GEMINI_API_KEY=your_gemini_api_key_here
-   SMTP_HOST=smtp.gmail.com
-   SMTP_PORT=587
-   SMTP_USER=your_email@gmail.com
-   SMTP_PASSWORD=your_app_password
-   ```
-5. Run the server:
-   ```bash
-   uvicorn main:app --reload --port 8000
-   ```
+### 1. Clone & Set Up Directory
+```bash
+git clone https://github.com/your-username/IntelliMeet.git
+cd IntelliMeet
+```
 
-### Setup Frontend (Next.js)
-1. Navigate to the frontend directory:
-   ```bash
-   cd frontend
-   ```
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
-3. Configure environment variables (create `.env.local`):
-   ```env
-   NEXT_PUBLIC_API_URL=http://localhost:8000
-   ```
-4. Run the development server:
-   ```bash
-   npm run dev
-   ```
-5. Open [http://localhost:3000](http://localhost:3000) in your browser.
+### 2. Backend Installation
+```bash
+cd backend
+python -m venv venv
+# Windows:
+venv\Scripts\activate
+# macOS/Linux:
+source venv/bin/activate
 
----
+pip install -r requirements.txt
+```
 
-## 🎯 Demo Script / Validation Scenarios
+### 3. Frontend Installation
+```bash
+cd ../frontend
+npm install
+```
 
-To prove the core value to the hackathon judges:
+### 4. Database Setup & Seed
+From the `backend/` directory:
+```bash
+$env:PYTHONPATH = "app"
+python app/database/seed.py
+```
 
-1. **Seed Employee Table**: Load Rahul (Backend Team) and Priya (Product Team).
-2. **First Ingestion & Parse**:
-   *   *Input*: *"The payment integration is delayed because the Vendor API is unstable. Rahul will coordinate with the backend team before Friday. If this issue continues, it may impact the Phase-2 release. Priya escalated the concern to leadership."*
-   *   *System Action*: Extract project "Payment Integration", owner Rahul, risk "Phase-2 delay", escalation "Priya", blocker "Vendor API instability".
-   *   *Email Result*: Rahul receives an automated email detailing the backend coordination task.
-3. **Structured Query Verification**:
-   *   *Ask*: *"Show unresolved escalations"* $\rightarrow$ System queries SQLite and returns Priya's escalation instantly.
-4. **Semantic Query Verification**:
-   *   *Ask*: *"Which meetings discussed Vendor API issues?"* $\rightarrow$ System scans ChromaDB and returns the newly uploaded meeting.
-5. **Score Verification**:
-   *   "Payment Integration" displays on the dashboard with a Risk Score of **19** (1 Open Escalation $\times$ 5 + 1 Open Risk $\times$ 3 + 1 Overdue/Pending Task $\times$ 2 - wait, if the task is pending, it qualifies for Open Escalation/Risk/Task calculations).
+### 5. Running the Servers
+
+#### Start Backend (Port 8000)
+From the `backend/` directory:
+```bash
+$env:PYTHONPATH = "app"
+uvicorn app.main:app --port 8000 --host 127.0.0.1 --reload
+```
+
+#### Start Frontend (Port 3000)
+From the `frontend/` directory:
+```bash
+npm run dev
+```
+Open `http://localhost:3000` to interact with the dashboard.
 
 ---
 
-## 🎨 Frontend Implementation Details & UX Refinements
+## 🔑 Environment Variables
 
-The frontend portion of **IntelliMeet** has been built using a premium, professional corporate design system. It leverages a clean cream-and-teal brand palette, advanced typographic pairing, and highly interactive user experience (UX) elements to make it boardroom-ready.
+Create a `.env` file inside the `backend/` directory:
 
-### 1. Typography & Theme System
-*   **Font Pairing**: Configured Google fonts via Next.js Font loaders:
-    *   `Outfit`: Used for clean, geometric body copy, lists, metrics, metadata, and buttons.
-    *   `DM Serif Display`: Used for elegant, editorial page headers, primary welcomes, and sidebar branding.
-*   **Tailwind v4 theme mappings**: Explicitly bound `--font-sans` and `--font-serif` to the next/font CSS variables inside [globals.css](file:///c:/Users/Lenovo/Desktop/Intellimeet/frontend/app/globals.css) to prevent system font fallback.
-*   **Palette Enforcement**:
-    *   `Warm Cream Background` (`#F6F1E9`): Warm cream base canvas.
-    *   `Forest Teal Green` (`#0D6A5D` / `var(--primary)`): Primary brand color for highlights, active links, and buttons.
-    *   `Warm Coral Orange` (`#E06B36` / `var(--accent)`): Accent color for alerts, trend lines, and action overlays.
-    *   `Deep Green-Slate` (`#091E1A`): Dark contrast color for the sidebar container.
-
-### 2. Dashboard Polish (`/`)
-*   **Refined Header Sizing**: Titles render in large, tracking-wide serif headers.
-*   **High-Contrast Stats Cards**: Metric counts are bold, high-contrast values. Cards animate smoothly on hover (`hover:-translate-y-0.5 hover:shadow-md hover:border-primary/25`).
-*   **Consistent Chart Branding**: Re-styled all custom SVG indicators (weekly lines, project bars, risk allocation donut chart) to render in matching forest green and warm orange accents.
-
-### 3. AI Chat Assistant Overhaul (`/chat`)
-*   **Active Chat Capsule Input Bar**: Overhauled the bottom text box into a capsule/pill shaped bar (`rounded-full bg-card-bg`). Includes attachment plus triggers, model selection, microphone actions, and a signature circular button.
-*   **Dynamic Circular Icon States**: The signature button shows a white soundwave/waveform SVG over a forest green background when the text box is empty, and automatically shifts into a warm orange Send button when text is typed.
-*   **Auto-Growing Text Input**: Textarea dynamically expands in height as long queries are entered (up to `90px` limit) without breaking page bounds.
-*   **Collapsible Dev Trace Accordions**: Integrated database SQLite queries and vector retrieval citations into a native details dropdown (*"View Engine Trace & citations"*), maintaining an executive-clean conversation bubble.
-*   **Animated Typing Indicator**: Bouncing dot animation bubbles render when the chat state is fetching a response.
-*   **Voice Stream Ingestion Simulator**: Clicking the microphone displays an overlay displaying sound wave rings with buttons to simulate or cancel speech inputs.
-
-### 4. Sidebar Redesign
-*   **Custom SVG Branding**: Replaced the static PNG logo with an inline SVG representing soundwave data and AI sparkles, colored with the accent theme gradient.
-*   **Dark Green-Slate Contrast**: Changed sidebar background to `#091E1A` with a dark divider structure to visually frame the main cream canvas.
+| Variable | Required | Purpose / Value |
+| :--- | :--- | :--- |
+| `GEMINI_API_KEY` | **Yes** | Google AI Studio Gemini API Key |
+| `RESEND_API_KEY` | No | Resend API key (if unprovided, defaults to log simulation) |
+| `GEMINI_MODEL` | No | Models to use. Defaults to `gemini-2.5-flash` |
+| `DATABASE_URL` | No | SQLAlchemy connection path. Defaults to `sqlite:///meeting_data.db` |
+| `CHROMA_DB_PATH` | No | Directory path to store vector cache. Defaults to `chroma_db` |
 
 ---
 
-## 📂 Complete Frontend Directory Structure
+## 🔄 Demo Workflow
+
+1.  **Ingestion**: Navigate to the upload page and upload `vendor_sync.pdf` or paste a transcript text.
+2.  **Processing**: The document processor extracts text, sends it to Gemini, validates the JSON output, inserts records (tasks, risks, escalations) into SQLite, and indexes embeddings in ChromaDB.
+3.  **Notifications**: Background threads trigger email alerts to Yashank Gupta regarding task assignments.
+4.  **Recalculation**: The project risk score updates in the dashboard (e.g. status changes to `Medium Risk` due to active tasks).
+5.  **Interactive Q&A**: Ask the chat assistant: *"What is the mitigation plan for the Vendor API timeout blocker?"*.
+6.  **RAG Execution**: The assistant classifies the intent, queries database tables, fetches the risk description from vector space, builds a 900-word context, and invokes Gemini to generate the final synthesized response with citations.
+
+---
+
+## 📈 Performance & Scalability
+
+### Hackathon Sizing (Current State)
+*   **Meetings**: 100-500
+*   **Database**: In-process SQLite + local ChromaDB persistent file storage.
+*   **Embeddings**: Processed on CPU (latency ~100ms per paragraph batch).
+
+### Enterprise Scaling Strategy
+To support 10,000+ to 1 million meetings:
 
 ```
-frontend/
-├── app/
-│   ├── layout.tsx             # Fonts loading, HTML structure, global Sidebar/Navbar wrapping
-│   ├── globals.css            # Custom CSS variables, theme classes, scrollbars, and keyframe animations
-│   ├── page.tsx               # Executive Dashboard (Stats grid, Project Health, Risk Distribution, Escalation Trend)
-│   ├── chat/
-│   │   └── page.tsx           # AI Chat Assistant (Landing prompts, active capsule inputs, voice overlay)
-│   ├── upload/
-│   │   └── page.tsx           # Meeting Upload (Simulated OCR processing steps and JSON extract preview)
-│   ├── meetings/
-│   │   └── page.tsx           # Meetings History (Expanadable transcripts, tabs for tasks, risks, and decisions)
-│   ├── escalations/
-│   │   └── page.tsx           # Escalation Center (Kanban/table views with quick-resolve toggles)
-│   └── risks/
-│       └── page.tsx           # Risk Analytics (Heatmap, project severity listings, dynamic risk calculations)
-├── components/
-│   ├── layout/
-│   │   ├── Sidebar.tsx        # High-contrast sidebar navigation, inline SVG logo, active links
-│   │   ├── Navbar.tsx         # Top dashboard system indicators and profile tags
-│   │   └── PageHeader.tsx     # Typography unified serif header component
-│   ├── dashboard/
-│   │   ├── StatsCard.tsx             # Interactive metric cards with hover translate effects
-│   │   ├── ProjectHealthChart.tsx    # Responsive dynamic horizontal project health score bar
-│   │   ├── EscalationTrendChart.tsx  # Interactive weekly SVG line/area trend graph
-│   │   ├── RiskDistributionChart.tsx # Dynamic risk donut visualizer with legend offsets
-│   │   └── RecentMeetings.tsx        # Table listing recently processed sync sessions and tasks
-│   └── common/
-│       ├── Loader.tsx         # Pulsing logo spinner
-│       ├── EmptyState.tsx     # Large themed visual panel shown when lists are clean/empty
-│       └── ErrorState.tsx     # Warning states
-├── hooks/
-│   ├── useChat.ts             # Manages conversation history, loading indicators, and message dispatches
-│   ├── useMeetings.ts         # Handles seed and uploaded meeting objects
-│   ├── useEscalations.ts      # Tracks blockers and resolution status updates
-│   └── useRisks.ts            # Calculates project risk ratings dynamically
-├── services/
-│   ├── chatService.ts         # Simulated Gemini / RAG trace responses
-│   ├── meetingService.ts      # localstorage API hooks for parsed transcription cards
-│   ├── riskService.ts         # Tracks active projects
-│   └── escalationService.ts   # Updates escalation items
-├── types/
-│   ├── chat.ts                # Typings for messages, citations, and model strings
-│   ├── meeting.ts             # Card metadata types
-│   ├── risk.ts                # Severity metrics and projects structures
-│   └── escalation.ts          # Severity, owner, and blocker statuses
-├── lib/
-│   └── mockData.ts            # LocalStorage seed initializers (empty meetings, tasks, risks; employees roster)
-├── package.json               # Configured next, react, lucide-react dependencies
-└── tsconfig.json              # TypeScript compilation rules
+[FastAPI Gateways] ──► [Celery Task Workers] ──► [Distributed DB Cluster]
+- Autoscale Nodes      - Async OCR Processing   - PostgreSQL DB
+                       - Batch embedding (GPUs) - Managed Vector DB (Qdrant / PGVector)
 ```
+
+---
+
+## 🔒 Security Considerations
+
+*   **API Validation**: Pydantic interfaces intercept payloads to block bad parameters.
+*   **SQL Parameterization**: SQLAlchemy protects against SQL Injection.
+*   **API isolation**: Database schemas are hidden from client routes; only serialized JSON schemas are returned.
+*   **Secrets Protection**: API credentials are loaded dynamically from environment configurations.
+
+---
+
+## 🗺️ Future Roadmap
+
+*   **Multi-Agent Workflows**: Integrate agents that coordinate to resolve blockers and cross-reference tasks.
+*   **Neo4j Integration**: Connect entities to map dependencies between developers and milestones.
+*   **Communication Plugins**: Build native integrations for Slack, Teams, and Google Meet.
+*   **Automated Voice Transcription**: Incorporate Whisper API models for automated audio recording imports.
+
+---
+
+## 👥 Team & Author
+
+*   **Author**: Yashank Gupta
+*   **Role**: AI Engineer
+*   **Organization**: IntimeTec
+*   **Github**: [https://github.com/yashank-dev](https://github.com/yashank-dev)
+
+---
+
+## 🏁 Conclusion
+
+IntelliMeet changes how organizations manage knowledge by converting verbose, unorganized meeting transcripts into structured database facts and semantic vector indexes. By combining SQLite's relational reliability, ChromaDB's semantic capabilities, and Gemini's synthesis power, IntelliMeet ensures that accountability is maintained, deadlines are tracked, and crucial organizational knowledge remains searchable and auditable in real-time.

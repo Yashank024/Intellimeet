@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from database.db import Database
 from database.seed import seed_db
-from routes import upload, meetings, risks, escalations, chat, dashboard
+from routes import upload, meetings, risks, escalations, chat, dashboard, health
 from events.dispatcher import setup_event_listeners
 from services.deadline_scheduler import start_deadline_scheduler
 
@@ -45,6 +45,7 @@ app.include_router(risks.router, prefix="/api")
 app.include_router(escalations.router, prefix="/api")
 app.include_router(chat.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
+app.include_router(health.router, prefix="/api")
 
 @app.get("/")
 def read_root():
