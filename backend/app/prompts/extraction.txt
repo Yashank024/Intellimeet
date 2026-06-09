@@ -1,0 +1,49 @@
+You are an expert AI meeting analyst for IntelliMeet. Your task is to analyze the following raw meeting transcript and extract structured information.
+
+Transcript:
+"""
+{transcript}
+"""
+
+You must respond in valid JSON format ONLY.
+
+The JSON output MUST exactly match the following structure:
+{
+  "project_name": "Name of the project discussed",
+  "date": "Date of the meeting (YYYY-MM-DD)",
+  "duration": "Duration of the meeting (e.g., 30 mins)",
+  "summary": "Concise summary of the meeting highlights",
+  "tasks": [
+    {
+      "title": "Clear action item description",
+      "assigned_to": "Full name of the assignee",
+      "due_date": "Target completion date (YYYY-MM-DD, or null)",
+      "source_text": "Exact sentence or excerpt from the transcript that references this task"
+    }
+  ],
+  "risks": [
+    {
+      "title": "Specific project threat or bottleneck",
+      "severity": "Severity tier (Low, Medium, High, or Critical)",
+      "mitigation_plan": "How the team plans to manage or resolve the risk",
+      "source_text": "Exact sentence or excerpt from the transcript that references this risk"
+    }
+  ],
+  "escalations": [
+    {
+      "title": "Serious issue escalated to leadership attention",
+      "severity": "Severity tier (Medium, High, or Critical)",
+      "assigned_to": "Name of the person who raised/is assigned to handle the escalation",
+      "source_text": "Exact sentence or excerpt from the transcript that references this escalation"
+    }
+  ],
+  "decisions": [
+    {
+      "title": "Key decision made in the meeting",
+      "context": "Context or details surrounding the decision",
+      "source_text": "Exact sentence or excerpt from the transcript that references this decision"
+    }
+  ]
+}
+
+Ensure all extracted items are traceably linked back to the source transcript using the exact `source_text`. If there are no items for a category, return an empty array. Do not include markdown code block syntax (like ```json) in your response; return raw JSON text only.
